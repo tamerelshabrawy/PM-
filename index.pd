@@ -7709,9 +7709,9 @@
 #X msg 543 111 seed 4453; 
 #X obj 396 119 random 100; 
 #X obj 323 12 r clock; 
-#X obj 1090 111 expr~ tanh($v1); 
+#X obj 1090 111 clip~ -0.95 0.95; 
 #X obj 1090 81 *~ 0.9; 
-#X obj 401 510 expr~ tanh($v1); 
+#X obj 401 510 clip~ -0.95 0.95; 
 #X obj 231 368 *~; 
 #X msg 562 167 seed 8667; 
 #X obj 481 224 random 8; 
