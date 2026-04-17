@@ -14,6 +14,10 @@
         <!-- Main modules -->
 
         <script src="./pd4web.js"></script>
+        <script src="./geolocation.js"></script>
+        <script src="./gps_pd_bridge.js"></script>
+        <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.22.0/dist/tf.min.js"></script>
+        <script src="./ai-classifier-bridge.js"></script>
         <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
         <style>
             @media (prefers-color-scheme: light) {
@@ -41,7 +45,7 @@
             }
 
             span {
-                color: @fg;
+                color: var(--fg);
             }
 
             #wasm-loader {
@@ -174,10 +178,28 @@
                 .then((wasmBuffer) => {
                     Pd4WebModule({ wasmBinary: wasmBuffer }).then((Pd4WebModulePromise) => {
                         const Pd4Web = new Pd4WebModulePromise.Pd4Web();
+                        window.Pd4WebInstance = Pd4Web;
+                        window.Pd = Pd4Web;
                         Pd4Web.openPatch("index.pd", {
                             canvasId: "Pd4WebCanvas",
                             soundToggleId: "Pd4WebAudioSwitch",
                         });
+
+                        // Start GPS → Pd bridge
+                        if (typeof window.startGpsBridge === "function") {
+                            startGpsBridge(Pd4Web, function(update) {
+                                console.log("[GPS]", update);
+                            });
+                        }
+
+                        // Start AI classifier (self-gates to zones 32-35)
+                        if (window.AiClassifierBridge && typeof window.AiClassifierBridge.start === "function") {
+                            AiClassifierBridge.start().catch(function(e) {
+                                console.warn("[AI] classifier start failed:", e);
+                            });
+                        }
+
+                        // Hide loader
                         const wasmLoader = document.getElementById("wasm-loader");
                         statusElement.style.display = "none";
                         progressElement.style.display = "none";
