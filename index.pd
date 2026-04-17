@@ -1,5 +1,4 @@
 #N canvas 43 38 1685 1051 12; 
-#X declare -path else; 
 #X declare -path Libs; 
 #X obj 89 130 tgl 19 0 empty empty empty 0 -10 0 12 #00ff04 #000000 #000000 0 1; 
 #X obj 89 154 metro; 
@@ -9550,7 +9549,6 @@
 #X msg 1314 206 set 1 \, 1; 
 #X msg 1430 176 size 0.8 \, wet 0.9 \, damp 0.56 \, pre 100; 
 #N canvas 0 0 1860 1132 pd4web-config 0; 
-#X obj 12 33 declare -path else; 
 #X obj 12 7 declare -path Libs; 
 #X text 146 5 <= To work in my computer; 
 #X text 145 32 <= To work without any Pd config besides else instalation; 
