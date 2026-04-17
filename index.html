@@ -19,7 +19,7 @@
         <!-- GPS → Pd zone bridge (depends on GeoLogic) -->
         <script src="./gps_pd_bridge.js"></script>
         <!-- TensorFlow.js for YAMNet AI classifier -->
-        <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs"></script>
+        <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.22.0/dist/tf.min.js" integrity="sha384-OLBgp1GsljhM2TJ+sbHjaiH9txEUvgdDTAzHv2P24donTt6/529l+9Ua0vFImLlb" crossorigin="anonymous"></script>
         <!-- AI sound classifier bridge (depends on tf + pd4web) -->
         <script src="./ai-classifier-bridge.js"></script>
         <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
@@ -192,6 +192,8 @@
                         // Start GPS → zone bridge (uses geolocation.js + gps_pd_bridge.js)
                         if (typeof startGpsBridge === 'function') {
                             startGpsBridge(Pd4Web);
+                        } else {
+                            console.warn('[index] startGpsBridge not available — GPS zone routing inactive');
                         }
 
                         // Start AI sound classifier (zones 32-35 only)
