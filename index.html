@@ -14,6 +14,14 @@
         <!-- Main modules -->
 
         <script src="./pd4web.js"></script>
+        <!-- Geolocation logic (must load before gps_pd_bridge.js) -->
+        <script src="./geolocation.js"></script>
+        <!-- GPS → Pd zone bridge (depends on GeoLogic) -->
+        <script src="./gps_pd_bridge.js"></script>
+        <!-- TensorFlow.js for YAMNet AI classifier -->
+        <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs"></script>
+        <!-- AI sound classifier bridge (depends on tf + pd4web) -->
+        <script src="./ai-classifier-bridge.js"></script>
         <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
         <style>
             @media (prefers-color-scheme: light) {
@@ -178,16 +186,19 @@
                             canvasId: "Pd4WebCanvas",
                             soundToggleId: "Pd4WebAudioSwitch",
                         });
-                        if (navigator.geolocation) {
-                            navigator.geolocation.watchPosition(
-                                (pos) => {
-                                    Pd4Web.sendFloat("latitude", pos.coords.latitude);
-                                    Pd4Web.sendFloat("longitude", pos.coords.longitude);
-                                    Pd4Web.sendFloat("accuracy", pos.coords.accuracy);
-                                },
-                                (err) => console.error("GPS error:", err),
-                                { enableHighAccuracy: true, maximumAge: 1000, timeout: 10000 }
-                            );
+                        // Expose Pd4Web instance globally for ai-classifier-bridge.js
+                        window.Pd4WebInstance = Pd4Web;
+
+                        // Start GPS → zone bridge (uses geolocation.js + gps_pd_bridge.js)
+                        if (typeof startGpsBridge === 'function') {
+                            startGpsBridge(Pd4Web);
+                        }
+
+                        // Start AI sound classifier (zones 32-35 only)
+                        if (window.AiClassifierBridge && typeof window.AiClassifierBridge.start === 'function') {
+                            window.AiClassifierBridge.start().catch(function(err) {
+                                console.warn('[index] AI classifier start deferred:', err.message);
+                            });
                         }
                         const wasmLoader = document.getElementById("wasm-loader");
                         statusElement.style.display = "none";
