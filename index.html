@@ -178,17 +178,6 @@
                             canvasId: "Pd4WebCanvas",
                             soundToggleId: "Pd4WebAudioSwitch",
                         });
-                        if (navigator.geolocation) {
-                            navigator.geolocation.watchPosition(
-                                (pos) => {
-                                    Pd4Web.sendFloat("latitude", pos.coords.latitude);
-                                    Pd4Web.sendFloat("longitude", pos.coords.longitude);
-                                    Pd4Web.sendFloat("accuracy", pos.coords.accuracy);
-                                },
-                                (err) => console.error("GPS error:", err),
-                                { enableHighAccuracy: true, maximumAge: 1000, timeout: 10000 }
-                            );
-                        }
                         const wasmLoader = document.getElementById("wasm-loader");
                         statusElement.style.display = "none";
                         progressElement.style.display = "none";
