@@ -19,7 +19,6 @@
         console.log("[gps_pd_bridge] ZONE", zone, "(" + label + ") | debounced");
         if (family !== _currentFamily) {
             _currentFamily = family;
-            sendToPd("family", family);
             console.log("[gps_pd_bridge] FAMILY", family, "(" + label + ")");
         }
     }
@@ -77,7 +76,6 @@
         _currentFamily = GeoLogic.zoneToFamily(z);
         window.currentZone = z;
         sendToPd("zone", z);
-        sendToPd("family", _currentFamily);
         console.log("[gps_pd_bridge] manual zone:", z, "family:", _currentFamily, "(" + GeoLogic.zoneToTrackLabel(z) + ")");
     }
 
