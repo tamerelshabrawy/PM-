@@ -10,6 +10,17 @@
         catch (e) { console.error("[gps_pd_bridge] sendFloat error:", e); }
     }
 
+    function emitZoneChange(zone, family, label, reason) {
+        window.dispatchEvent(new CustomEvent("zone-change", {
+            detail: {
+                zone: zone,
+                family: family,
+                label: label || "",
+                reason: reason || "unknown",
+            },
+        }));
+    }
+
     function commitZone(zone) {
         _currentZone = zone;
         window.currentZone = zone;
@@ -19,14 +30,25 @@
         console.log("[gps_pd_bridge] ZONE", zone, "(" + label + ") | debounced");
         if (family !== _currentFamily) {
             _currentFamily = family;
+            sendToPd("family", family);
             console.log("[gps_pd_bridge] FAMILY", family, "(" + label + ")");
         }
+        emitZoneChange(zone, family, label, "gps");
     }
 
     function onPosition(pos) {
         var lat = pos.coords.latitude, lon = pos.coords.longitude, acc = pos.coords.accuracy;
         if (!GeoLogic.nearRoute(lon, lat)) {
             console.log("[gps_pd_bridge] off-route | lat:", lat.toFixed(6), "lon:", lon.toFixed(6), "±" + Math.round(acc) + "m");
+            if (_currentZone !== 0) {
+                _currentZone = 0;
+                _currentFamily = -1;
+                _pendingZone = -1;
+                clearTimeout(_zoneTimer);
+                window.currentZone = 0;
+                sendToPd("zone", 0);
+                emitZoneChange(0, -1, "", "off-route");
+            }
             if (_onUpdate) _onUpdate({ lat: lat, lon: lon, acc: acc, onRoute: false, zone: _currentZone });
             return;
         }
@@ -76,7 +98,9 @@
         _currentFamily = GeoLogic.zoneToFamily(z);
         window.currentZone = z;
         sendToPd("zone", z);
+        sendToPd("family", _currentFamily);
         console.log("[gps_pd_bridge] manual zone:", z, "family:", _currentFamily, "(" + GeoLogic.zoneToTrackLabel(z) + ")");
+        emitZoneChange(z, _currentFamily, GeoLogic.zoneToTrackLabel(z), "manual");
     }
 
     // Live tuning from console: setZoneDebounce(2000)
