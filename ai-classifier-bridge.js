@@ -388,24 +388,6 @@
     AiClassifier.prototype._ensureMicrophone = function () {
         var self = this;
         if (self.mediaStream) return Promise.resolve();
-        /* Reuse pd4web's AudioContext — never create a second one on iOS.
-           Pd4WebAudioContext is the global AudioContext set by pd4web.js.
-           If it isn't ready yet (audio worklet not started), wait for it. */
-        var pd4webCtx = window.Pd4WebAudioContext || null;
-        if (!pd4webCtx) {
-            console.warn('[AiClassifierBridge] Pd4WebAudioContext not yet available — mic pipeline deferred.');
-            return Promise.resolve();
-        }
-        /* pd4web already called getUserMedia and has a mic stream running through
-           its AudioWorklet.  We tap that same stream by asking for it again with
-           identical constraints so the browser can de-duplicate the track on iOS.
-           If pd4web exposes its stream directly we will use that; otherwise we
-           call getUserMedia once (the browser shares the same physical track). */
-        var existingStream = window._pd4webMicStream || null;
-        if (existingStream) {
-            self._buildAudioPipeline(existingStream);
-            return Promise.resolve();
-        }
         return navigator.mediaDevices.getUserMedia({
             audio: {
                 echoCancellation: false,
@@ -421,15 +403,10 @@
 
     AiClassifier.prototype._buildAudioPipeline = function (stream) {
         var self = this;
-        /* Always reuse pd4web's AudioContext — NEVER create a new one.
-           window.Pd4WebAudioContext is set by pd4web.js when the audio
-           worklet node is created (JS_CreateAudioWorkletNode). */
-        var ctx = window.Pd4WebAudioContext;
-        if (!ctx) {
-            console.error('[AiClassifierBridge] Pd4WebAudioContext unavailable — cannot build audio pipeline.');
-            return;
+        if (!self.audioCtx) {
+            self.audioCtx = new (window.AudioContext || window.webkitAudioContext)();
         }
-        self.audioCtx = ctx;
+        var ctx = self.audioCtx;
         self.mediaStream = stream;
 
         /* WebAudio chain: source → gain → highpass → lowpass → analyser → silent sink */
