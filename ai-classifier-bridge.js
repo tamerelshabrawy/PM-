@@ -328,14 +328,6 @@
         return self._ensureModel()
             .then(function () { return self._ensureMicrophone(); })
             .then(function () {
-                if (!self.audioCtx || !self.sourceNode || !self.scriptProcessor) {
-                    throw new Error('Classifier audio pipeline is unavailable.');
-                }
-                if (self.audioCtx.state === 'suspended' && typeof self.audioCtx.resume === 'function') {
-                    return self.audioCtx.resume().catch(function () {});
-                }
-            })
-            .then(function () {
                 self.running  = true;
                 self._starting = false;
                 console.log('[AiClassifierBridge] Started — listening (zones 32–35).');
@@ -395,17 +387,23 @@
 
     AiClassifier.prototype._ensureMicrophone = function () {
         var self = this;
-        if (self.mediaStream && self.audioCtx && self.sourceNode && self.scriptProcessor) {
-            if (self.audioCtx.state === 'suspended' && typeof self.audioCtx.resume === 'function') {
-                return self.audioCtx.resume().catch(function () {});
-            }
+        if (self.mediaStream) return Promise.resolve();
+        /* Reuse pd4web's AudioContext — never create a second one on iOS.
+           Pd4WebAudioContext is the global AudioContext set by pd4web.js.
+           If it isn't ready yet (audio worklet not started), wait for it. */
+        var pd4webCtx = window.Pd4WebAudioContext || null;
+        if (!pd4webCtx) {
+            console.warn('[AiClassifierBridge] Pd4WebAudioContext not yet available — mic pipeline deferred.');
             return Promise.resolve();
         }
-        if (self.mediaStream) {
-            self._buildAudioPipeline(self.mediaStream);
-            if (self.audioCtx && self.audioCtx.state === 'suspended' && typeof self.audioCtx.resume === 'function') {
-                return self.audioCtx.resume().catch(function () {});
-            }
+        /* pd4web already called getUserMedia and has a mic stream running through
+           its AudioWorklet.  We tap that same stream by asking for it again with
+           identical constraints so the browser can de-duplicate the track on iOS.
+           If pd4web exposes its stream directly we will use that; otherwise we
+           call getUserMedia once (the browser shares the same physical track). */
+        var existingStream = window._pd4webMicStream || null;
+        if (existingStream) {
+            self._buildAudioPipeline(existingStream);
             return Promise.resolve();
         }
         return navigator.mediaDevices.getUserMedia({
@@ -418,34 +416,20 @@
             video: false,
         }).then(function (stream) {
             self._buildAudioPipeline(stream);
-            if (!self.audioCtx || !self.sourceNode || !self.scriptProcessor) {
-                throw new Error('Classifier audio pipeline did not initialize.');
-            }
-            if (self.audioCtx.state === 'suspended' && typeof self.audioCtx.resume === 'function') {
-                return self.audioCtx.resume().catch(function () {});
-            }
         });
     };
 
     AiClassifier.prototype._buildAudioPipeline = function (stream) {
         var self = this;
-        if (!self.audioCtx) {
-            self.audioCtx = new (window.AudioContext || window.webkitAudioContext)({
-                latencyHint: 'interactive',
-            });
+        /* Always reuse pd4web's AudioContext — NEVER create a new one.
+           window.Pd4WebAudioContext is set by pd4web.js when the audio
+           worklet node is created (JS_CreateAudioWorkletNode). */
+        var ctx = window.Pd4WebAudioContext;
+        if (!ctx) {
+            console.error('[AiClassifierBridge] Pd4WebAudioContext unavailable — cannot build audio pipeline.');
+            return;
         }
-        var ctx = self.audioCtx;
-
-        if (self.scriptProcessor) {
-            try { self.scriptProcessor.disconnect(); } catch (_) {}
-            self.scriptProcessor.onaudioprocess = null;
-            self.scriptProcessor = null;
-        }
-        if (self.sourceNode) {
-            try { self.sourceNode.disconnect(); } catch (_) {}
-            self.sourceNode = null;
-        }
-
+        self.audioCtx = ctx;
         self.mediaStream = stream;
 
         /* WebAudio chain: source → gain → highpass → lowpass → analyser → silent sink */
