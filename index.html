@@ -173,29 +173,6 @@
                     xhr.send();
                 });
             }
-
-            function ensureAiStarted(reason) {
-                if (!window.AiClassifierBridge) return;
-                window.AiClassifierBridge.start().catch(function (err) {
-                    console.warn("[AiClassifierBridge] start() failed:", reason, err);
-                });
-            }
-
-            window.addEventListener("zone-change", function (e) {
-                const detail = e.detail || {};
-                const zone = Number(detail.zone || 0);
-                if (zone >= 32 && zone <= 35) {
-                    ensureAiStarted(detail.reason || "zone-change");
-                }
-            });
-
-            document.addEventListener("click", function (e) {
-                const target = e.target;
-                if (!target) return;
-                if (target.id === "Pd4WebAudioSwitch" || (target.closest && target.closest("#Pd4WebAudioSwitch"))) {
-                    ensureAiStarted("audio-switch");
-                }
-            }, true);
         </script>
 
         <script>
@@ -216,6 +193,16 @@
 
                         // Start GPS → Pd bridge (sends zone, family)
                         startGpsBridge(Pd4Web);
+
+                        // Start AI classifier once at startup (uses pd4web's existing
+                        // AudioContext and mic stream — no second AudioContext on iOS).
+                        // The classifier's onaudioprocess zone-gates classification
+                        // to zones 32–35 internally, so it is safe to start early.
+                        if (window.AiClassifierBridge) {
+                            window.AiClassifierBridge.start().catch(function (err) {
+                                console.warn('[AiClassifierBridge] startup start() failed:', err);
+                            });
+                        }
 
                         const wasmLoader = document.getElementById("wasm-loader");
                         statusElement.style.display = "none";
