@@ -10,6 +10,16 @@
         catch (e) { console.error("[gps_pd_bridge] sendFloat error:", e); }
     }
 
+    function emitZoneChange(zone, family, label, detail) {
+        window.dispatchEvent(new CustomEvent("gps-zone-change", {
+            detail: Object.assign({
+                zone: zone,
+                family: family,
+                label: label
+            }, detail || {})
+        }));
+    }
+
     function commitZone(zone) {
         _currentZone = zone;
         window.currentZone = zone;
@@ -22,6 +32,7 @@
             sendToPd("family", family);
             console.log("[gps_pd_bridge] FAMILY", family, "(" + label + ")");
         }
+        emitZoneChange(zone, family, label, { committed: true });
     }
 
     function onPosition(pos) {
@@ -79,6 +90,7 @@
         sendToPd("zone", z);
         sendToPd("family", _currentFamily);
         console.log("[gps_pd_bridge] manual zone:", z, "family:", _currentFamily, "(" + GeoLogic.zoneToTrackLabel(z) + ")");
+        emitZoneChange(z, _currentFamily, GeoLogic.zoneToTrackLabel(z), { committed: true, manual: true });
     }
 
     // Live tuning from console: setZoneDebounce(2000)

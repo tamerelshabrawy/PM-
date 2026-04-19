@@ -65,16 +65,20 @@
     var YAMNET_FRAME_SAMPLES = 7800;    // 0.49 s @ 16 kHz
 
     var CONFIG = {
-        fftSize:            1024,
-        inputAnalysisGain:  3,
-        inputHighpassHz:    80,
-        inputLowpassHz:     9000,
-        smoothingAlpha:     0.50,
-        minStateHoldMs:     280,
-        silenceDbThreshold: -55,
-        silenceHoldMs:      800,
-        minDb:              -90,
-        maxDb:              -12,
+        fftSize:              1024,
+        inputAnalysisGain:    3,
+        inputHighpassHz:      80,
+        inputLowpassHz:       9000,
+        smoothingAlpha:       0.50,
+        minStateHoldMs:       280,
+        silenceDbThreshold:   -55,
+        silenceHoldMs:        800,
+        minDb:                -90,
+        maxDb:                -12,
+        probabilityStep:      0.05,
+        rmsDbStep:            1,
+        auraAmountStep:       0.05,
+        stretchAmountStep:    0.1,
     };
 
     /* ─── YAMNet class name → our 6 sound categories ───────────────────────── */
@@ -169,22 +173,80 @@
         }
     }
 
-    /* ─── OfflineAudioContext resampler → 16 kHz ────────────────────────────── */
+    function isStreetAuraZone(zone) {
+        return zone >= 32 && zone <= 35;
+    }
+
+    function quantize(value, step) {
+        if (!step) return value;
+        return Math.round(value / step) * step;
+    }
+
+    function downsampleBuffer(float32Array, fromRate, toRate) {
+        if (toRate === fromRate) {
+            return float32Array;
+        }
+        if (toRate > fromRate) {
+            return linearResampleBuffer(float32Array, fromRate, toRate);
+        }
+
+        var ratio = fromRate / toRate;
+        var outputLength = Math.max(1, Math.round(float32Array.length / ratio));
+        var result = new Float32Array(outputLength);
+        var outputIndex = 0;
+        var inputIndex = 0;
+
+        while (outputIndex < outputLength) {
+            var nextInputIndex = Math.round((outputIndex + 1) * ratio);
+            nextInputIndex = Math.min(nextInputIndex, float32Array.length);
+
+            var accum = 0;
+            var count = 0;
+            for (var i = inputIndex; i < nextInputIndex; i++) {
+                accum += float32Array[i];
+                count++;
+            }
+
+            result[outputIndex] = count ? (accum / count) : 0;
+            outputIndex++;
+            inputIndex = nextInputIndex;
+        }
+
+        return result;
+    }
+
+    function linearResampleBuffer(float32Array, fromRate, toRate) {
+        var ratio = fromRate / toRate;
+        var outputLength = Math.max(1, Math.round(float32Array.length / ratio));
+        var result = new Float32Array(outputLength);
+
+        for (var i = 0; i < outputLength; i++) {
+            var position = i * ratio;
+            var leftIndex = Math.floor(position);
+            var rightIndex = Math.min(leftIndex + 1, float32Array.length - 1);
+            var weight = position - leftIndex;
+            var left = float32Array[leftIndex] || 0;
+            var right = float32Array[rightIndex] || left;
+            result[i] = left + (right - left) * weight;
+        }
+
+        return result;
+    }
+
+    function getPd4WebSharedAudio() {
+        return {
+            audioCtx: globalThis.Pd4WebAudioContext || null,
+            micStream: globalThis.Pd4WebMicStream || null,
+            micSourceNode: globalThis.Pd4WebMicSourceNode || null,
+        };
+    }
+
+    /* ─── Lightweight resampler → 16 kHz ───────────────────────────────────── */
     function resampleTo16k(float32Array, fromRate) {
         if (Math.abs(fromRate - YAMNET_SAMPLE_RATE) < 1) {
             return Promise.resolve(float32Array);
         }
-        var numFrames = Math.round(float32Array.length * YAMNET_SAMPLE_RATE / fromRate);
-        var offCtx = new OfflineAudioContext(1, numFrames, YAMNET_SAMPLE_RATE);
-        var buf    = offCtx.createBuffer(1, float32Array.length, fromRate);
-        buf.copyToChannel(float32Array, 0);
-        var src = offCtx.createBufferSource();
-        src.buffer = buf;
-        src.connect(offCtx.destination);
-        src.start(0);
-        return offCtx.startRendering().then(function (rendered) {
-            return rendered.getChannelData(0);
-        });
+        return Promise.resolve(downsampleBuffer(float32Array, fromRate, YAMNET_SAMPLE_RATE));
     }
 
     /* ─── YAMNet class map loader ────────────────────────────────────────────── */
@@ -298,7 +360,15 @@
         this.audioCtx        = null;
         this.mediaStream     = null;
         this.sourceNode      = null;
+        this.gainNode        = null;
+        this.highpassNode    = null;
+        this.lowpassNode     = null;
+        this.analyserNode    = null;
+        this.silentSinkNode  = null;
         this.scriptProcessor = null;
+        this._ownsMediaStream = false;
+        this._usesSharedSourceNode = false;
+        this._pdSendCache     = Object.create(null);
         this._captureBuffer  = [];
         this.running         = false;
         this._starting       = false;
@@ -341,25 +411,50 @@
 
     AiClassifier.prototype.stop = function () {
         this.running = false;
-        this._sendNeutral();
+        this._sendNeutral(true);
     };
 
     AiClassifier.prototype.dispose = function () {
         this.stop();
         this.running = false;
+        if (this.sourceNode && this._usesSharedSourceNode && this.gainNode) {
+            try { this.sourceNode.disconnect(this.gainNode); } catch (_) {}
+        }
         if (this.scriptProcessor) {
             try { this.scriptProcessor.disconnect(); } catch (_) {}
             this.scriptProcessor.onaudioprocess = null;
             this.scriptProcessor = null;
         }
-        if (this.mediaStream) {
+        if (this.silentSinkNode) {
+            try { this.silentSinkNode.disconnect(); } catch (_) {}
+            this.silentSinkNode = null;
+        }
+        if (this.analyserNode) {
+            try { this.analyserNode.disconnect(); } catch (_) {}
+            this.analyserNode = null;
+        }
+        if (this.lowpassNode) {
+            try { this.lowpassNode.disconnect(); } catch (_) {}
+            this.lowpassNode = null;
+        }
+        if (this.highpassNode) {
+            try { this.highpassNode.disconnect(); } catch (_) {}
+            this.highpassNode = null;
+        }
+        if (this.gainNode) {
+            try { this.gainNode.disconnect(); } catch (_) {}
+            this.gainNode = null;
+        }
+        if (this.mediaStream && this._ownsMediaStream) {
             this.mediaStream.getTracks().forEach(function (t) { t.stop(); });
-            this.mediaStream = null;
         }
-        if (this.sourceNode) {
+        this.mediaStream = null;
+        if (this.sourceNode && !this._usesSharedSourceNode) {
             try { this.sourceNode.disconnect(); } catch (_) {}
-            this.sourceNode = null;
         }
+        this.sourceNode = null;
+        this._ownsMediaStream = false;
+        this._usesSharedSourceNode = false;
         this._captureBuffer = [];
         this._resetState();
         console.log('[AiClassifierBridge] Disposed.');
@@ -387,7 +482,30 @@
 
     AiClassifier.prototype._ensureMicrophone = function () {
         var self = this;
-        if (self.mediaStream) return Promise.resolve();
+        if (self.scriptProcessor && self.sourceNode && self.audioCtx) {
+            return Promise.resolve();
+        }
+
+        var shared = getPd4WebSharedAudio();
+        if (shared.audioCtx && shared.micSourceNode) {
+            self._buildAudioPipeline({
+                audioCtx: shared.audioCtx,
+                sharedSourceNode: shared.micSourceNode,
+                mediaStream: shared.micStream || null,
+                ownsMediaStream: false,
+            });
+            return Promise.resolve();
+        }
+
+        if (shared.audioCtx && shared.micStream) {
+            self._buildAudioPipeline({
+                audioCtx: shared.audioCtx,
+                mediaStream: shared.micStream,
+                ownsMediaStream: false,
+            });
+            return Promise.resolve();
+        }
+
         return navigator.mediaDevices.getUserMedia({
             audio: {
                 echoCancellation: false,
@@ -397,38 +515,60 @@
             },
             video: false,
         }).then(function (stream) {
-            self._buildAudioPipeline(stream);
+            self._buildAudioPipeline({
+                audioCtx: shared.audioCtx || null,
+                mediaStream: stream,
+                ownsMediaStream: true,
+            });
         });
     };
 
-    AiClassifier.prototype._buildAudioPipeline = function (stream) {
+    AiClassifier.prototype._buildAudioPipeline = function (options) {
         var self = this;
-        if (!self.audioCtx) {
-            self.audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        if (!options) {
+            throw new Error('Audio pipeline options are required.');
         }
+
+        if (self.scriptProcessor || self.sourceNode) {
+            self.dispose();
+        }
+
+        if (!options.audioCtx) {
+            options.audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        }
+
+        self.audioCtx = options.audioCtx;
+        self.mediaStream = options.mediaStream || null;
+        self._ownsMediaStream = !!options.ownsMediaStream;
+        self._usesSharedSourceNode = !!options.sharedSourceNode;
+
         var ctx = self.audioCtx;
-        self.mediaStream = stream;
 
         /* WebAudio chain: source → gain → highpass → lowpass → analyser → silent sink */
         var gain = ctx.createGain();
         gain.gain.value = CONFIG.inputAnalysisGain;
+        self.gainNode = gain;
 
         var hp = ctx.createBiquadFilter();
         hp.type = 'highpass';
         hp.frequency.value = CONFIG.inputHighpassHz;
+        self.highpassNode = hp;
 
         var lp = ctx.createBiquadFilter();
         lp.type = 'lowpass';
         lp.frequency.value = CONFIG.inputLowpassHz;
+        self.lowpassNode = lp;
 
         var analyser = ctx.createAnalyser();
         analyser.fftSize              = CONFIG.fftSize;
         analyser.minDecibels          = CONFIG.minDb;
         analyser.maxDecibels          = CONFIG.maxDb;
         analyser.smoothingTimeConstant = 0;
+        self.analyserNode = analyser;
 
         var silentSink = ctx.createGain();
         silentSink.gain.value = 0;
+        self.silentSinkNode = silentSink;
 
         /* ScriptProcessorNode captures raw PCM for YAMNet resampling */
         var sp = ctx.createScriptProcessor(4096, 1, 1);
@@ -439,7 +579,7 @@
 
             /* Zone gate — only classify in zones 32–35 (Street Aura) */
             var zone = window.currentZone || 0;
-            if (zone < 32 || zone > 35) {
+            if (!isStreetAuraZone(zone)) {
                 self._sendNeutral();
                 return;
             }
@@ -457,7 +597,7 @@
             }
         };
 
-        self.sourceNode = ctx.createMediaStreamSource(stream);
+        self.sourceNode = options.sharedSourceNode || ctx.createMediaStreamSource(options.mediaStream);
         self.sourceNode.connect(gain);
         gain.connect(hp);
         hp.connect(lp);
@@ -650,82 +790,93 @@
     /* ── Private — helpers ──────────────────────────────────────────────────── */
 
     AiClassifier.prototype._sendAllToPd = function (snap) {
+        var self = this;
         var p  = snap.probabilities;
         var pa = snap.params;
+        var targets = {
+            aiSilence: quantize(p.silence  || 0, CONFIG.probabilityStep),
+            aiChatter: quantize(p.chatter  || 0, CONFIG.probabilityStep),
+            aiHorn:    quantize(p.horn     || 0, CONFIG.probabilityStep),
+            aiTraffic: quantize(p.traffic  || 0, CONFIG.probabilityStep),
+            aiBirds:   quantize(p.birds    || 0, CONFIG.probabilityStep),
+            aiSea:     quantize(p.sea      || 0, CONFIG.probabilityStep),
+            aiClass:   snap.stableIndex,
+            aiGrain:   pa.grainCount,
+            aiPitch:   pa.pitchShift,
+            aiStretch: pa.stretchTime,
+            aiRmsDb:   quantize(snap.features.rmsDb, CONFIG.rmsDbStep),
+        };
 
-        /* ── Debug sends (kept for monitoring) ── */
-        sendToPd('aiSilence', p.silence  || 0);
-        sendToPd('aiChatter', p.chatter  || 0);
-        sendToPd('aiHorn',    p.horn     || 0);
-        sendToPd('aiTraffic', p.traffic  || 0);
-        sendToPd('aiBirds',   p.birds    || 0);
-        sendToPd('aiSea',     p.sea      || 0);
-        sendToPd('aiClass',   snap.stableIndex);
-        sendToPd('aiGrain',   pa.grainCount);
-        sendToPd('aiPitch',   pa.pitchShift);
-        sendToPd('aiStretch', pa.stretchTime);
-        sendToPd('aiRmsDb',   snap.features.rmsDb);
-
-        /* ── Real street aura granular receivers (zones 32–35 only) ── */
         var zone = window.currentZone || 0;
-        if (zone < 32 || zone > 35) return;
+        if (isStreetAuraZone(zone)) {
+            /* grain rate: grainCount 2–15, clamp to scene param range 5–12 */
+            var grainRate = Math.max(5, Math.min(12, pa.grainCount));
+            targets.street06GrainRate_idlework = grainRate;
 
-        /* grain rate: grainCount 2–15, clamp to scene param range 5–12 */
-        var grainRate = Math.max(5, Math.min(12, pa.grainCount));
-        sendToPd('street06GrainRate_idlework', grainRate);
+            /* pitch high bound: scene param range is −1 to 12 semitones */
+            var pitchHi = Math.max(-1, Math.min(12, pa.pitchShift));
+            targets.street06PitchHi_idlework = pitchHi;
 
-        /* pitch high bound: scene param range is −1 to 12 semitones */
-        var pitchHi = Math.max(-1, Math.min(12, pa.pitchShift));
-        sendToPd('street06PitchHi_idlework', pitchHi);
+            /* pitch low bound: slightly below pitchHi, at least -1 */
+            var pitchLo = Math.max(-1, pitchHi - 2);
+            targets.street06PitchLo_idlework = pitchLo;
 
-        /* pitch low bound: slightly below pitchHi, at least -1 */
-        var pitchLo = Math.max(-1, pitchHi - 2);
-        sendToPd('street06PitchLo_idlework', pitchLo);
+            /* stretch high: stretchTime 25–100 → 4.0–2.0 (inverse scale) */
+            var stretchHi = 4.0 - ((pa.stretchTime - 25) / 75) * 2.0;
+            stretchHi = Math.max(2.4, Math.min(4.0, stretchHi));
+            targets.street06StretchHi_idlework = quantize(stretchHi, CONFIG.stretchAmountStep);
 
-        /* stretch high: stretchTime 25–100 → 4.0–2.0 (inverse scale) */
-        var stretchHi = 4.0 - ((pa.stretchTime - 25) / 75) * 2.0;
-        stretchHi = Math.max(2.4, Math.min(4.0, stretchHi));
-        sendToPd('street06StretchHi_idlework', stretchHi);
+            /* stretch low: slightly below stretchHi */
+            var stretchLo = Math.max(2.0, stretchHi - 0.5);
+            targets.street06StretchLo_idlework = quantize(stretchLo, CONFIG.stretchAmountStep);
 
-        /* stretch low: slightly below stretchHi */
-        var stretchLo = Math.max(2.0, stretchHi - 0.5);
-        sendToPd('street06StretchLo_idlework', stretchLo);
+            /* active class probabilities modulate granular expression */
+            var activeProb = 1 - (p.silence || 0);   /* 0=all silent, 1=active */
 
-        /* active class probabilities modulate granular expression */
-        var activeProb = 1 - (p.silence || 0);   /* 0=all silent, 1=active */
+            /* reverse probability: higher for horn/traffic, lower for calm sounds */
+            var reverseProb = Math.round(6 + activeProb * ((p.horn || 0) + (p.traffic || 0)) * 32);
+            targets.street06ReverseProb_idlework = Math.max(6, Math.min(38, reverseProb));
 
-        /* reverse probability: higher for horn/traffic, lower for calm sounds */
-        var reverseProb = Math.round(6 + activeProb * ((p.horn || 0) + (p.traffic || 0)) * 32);
-        reverseProb = Math.max(6, Math.min(38, reverseProb));
-        sendToPd('street06ReverseProb_idlework', reverseProb);
+            /* pitch probability: rises with chatter/birds/horn activity */
+            var pitchProb = Math.round(12 + activeProb * ((p.chatter || 0) + (p.birds || 0) + (p.horn || 0)) * 88);
+            targets.street06PitchProb_idlework = Math.max(12, Math.min(100, pitchProb));
 
-        /* pitch probability: rises with chatter/birds/horn activity */
-        var pitchProb = Math.round(12 + activeProb * ((p.chatter || 0) + (p.birds || 0) + (p.horn || 0)) * 88);
-        pitchProb = Math.max(12, Math.min(100, pitchProb));
-        sendToPd('street06PitchProb_idlework', pitchProb);
+            /* envelope probability: rises with overall activity */
+            var envProb = Math.round(18 + activeProb * 82);
+            targets.street06EnvProb_idlework = Math.max(18, Math.min(100, envProb));
 
-        /* envelope probability: rises with overall activity */
-        var envProb = Math.round(18 + activeProb * 82);
-        envProb = Math.max(18, Math.min(100, envProb));
-        sendToPd('street06EnvProb_idlework', envProb);
+            /* stretch probability: higher for sea/silence (smooth), lower for horn */
+            var stretchProb = Math.round(18 + ((p.sea || 0) + (p.silence || 0)) * 60);
+            targets.street06StretchProb_idlework = Math.max(18, Math.min(100, stretchProb));
 
-        /* stretch probability: higher for sea/silence (smooth), lower for horn */
-        var stretchProb = Math.round(18 + ((p.sea || 0) + (p.silence || 0)) * 60);
-        stretchProb = Math.max(18, Math.min(100, stretchProb));
-        sendToPd('street06StretchProb_idlework', stretchProb);
+            /* wet/dry mix: dominant class confidence drives aura amount (0.08–1.0) */
+            var dominantProb = snap.probabilities[snap.stableClass] || 0;
+            var auraAmt = 0.08 + dominantProb * 0.92;
+            targets.auraAmt_idlework = quantize(Math.max(0.08, Math.min(1.0, auraAmt)), CONFIG.auraAmountStep);
+        }
 
-        /* wet/dry mix: dominant class confidence drives aura amount (0.08–1.0) */
-        var dominantProb = snap.probabilities[snap.stableClass] || 0;
-        var auraAmt = 0.08 + dominantProb * 0.92;
-        auraAmt = Math.max(0.08, Math.min(1.0, auraAmt));
-        sendToPd('auraAmt_idlework', auraAmt);
+        self._flushPdTargets(targets);
     };
 
-    AiClassifier.prototype._sendNeutral = function () {
-        sendToPd('aiGrain',   2);
-        sendToPd('aiPitch',   0);
-        sendToPd('aiStretch', 100);
-        sendToPd('aiClass',   0);
+    AiClassifier.prototype._flushPdTargets = function (targets, force) {
+        var self = this;
+        Object.keys(targets).forEach(function (name) {
+            var value = targets[name];
+            if (!force && self._pdSendCache[name] === value) {
+                return;
+            }
+            self._pdSendCache[name] = value;
+            sendToPd(name, value);
+        });
+    };
+
+    AiClassifier.prototype._sendNeutral = function (force) {
+        this._flushPdTargets({
+            aiGrain: 2,
+            aiPitch: 0,
+            aiStretch: 100,
+            aiClass: 0,
+        }, force);
     };
 
     AiClassifier.prototype._commitClass = function (cls, now) {
@@ -740,6 +891,7 @@
 
     AiClassifier.prototype._resetState = function () {
         this._captureBuffer    = [];
+        this._pdSendCache      = Object.create(null);
         this._smoothedLogProbs = null;
         this._stableClass      = 'silence';
         this._stableIdx        = 0;

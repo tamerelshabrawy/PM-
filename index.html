@@ -150,6 +150,38 @@
         <script>
             const statusElement = document.getElementById("status");
             const progressElement = document.getElementById("progress");
+
+            function isStreetAuraZone(zone) {
+                return zone >= 32 && zone <= 35;
+            }
+
+            function startStreetAuraClassifier() {
+                if (!window.AiClassifierBridge) return;
+                window.AiClassifierBridge.start().catch(function (err) {
+                    console.warn('[AiClassifierBridge] zone-based start() failed:', err);
+                });
+            }
+
+            function stopStreetAuraClassifier() {
+                if (!window.AiClassifierBridge) return;
+                window.AiClassifierBridge.dispose();
+            }
+
+            function handleGeoUpdate(update) {
+                if (!update || update.onRoute === false) {
+                    stopStreetAuraClassifier();
+                }
+            }
+
+            window.addEventListener('gps-zone-change', function (event) {
+                var detail = event.detail || {};
+                if (isStreetAuraZone(detail.zone)) {
+                    startStreetAuraClassifier();
+                } else {
+                    stopStreetAuraClassifier();
+                }
+            });
+
             function fetchWithProgress(url, label) {
                 return new Promise((resolve, reject) => {
                     const xhr = new XMLHttpRequest();
@@ -191,18 +223,9 @@
                             soundToggleId: "Pd4WebAudioSwitch",
                         });
 
-                        // Start GPS → Pd bridge (sends zone, family)
-                        startGpsBridge(Pd4Web);
-
-                        // Start AI classifier once at startup (uses pd4web's existing
-                        // AudioContext and mic stream — no second AudioContext on iOS).
-                        // The classifier's onaudioprocess zone-gates classification
-                        // to zones 32–35 internally, so it is safe to start early.
-                        if (window.AiClassifierBridge) {
-                            window.AiClassifierBridge.start().catch(function (err) {
-                                console.warn('[AiClassifierBridge] startup start() failed:', err);
-                            });
-                        }
+                        // Start GPS → Pd bridge and only enable the Street Aura
+                        // classifier when we are actually inside zones 32–35.
+                        startGpsBridge(Pd4Web, handleGeoUpdate);
 
                         const wasmLoader = document.getElementById("wasm-loader");
                         statusElement.style.display = "none";
