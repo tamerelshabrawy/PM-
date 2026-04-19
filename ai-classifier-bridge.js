@@ -79,6 +79,8 @@
         rmsDbStep:            1,
         auraAmountStep:       0.05,
         stretchAmountStep:    0.1,
+        chatterMaxShare:      0.55,
+        chatterAmbientFloor:  0.20,
     };
 
     /* ─── YAMNet class name → our 6 sound categories ───────────────────────── */
@@ -108,6 +110,7 @@
         ],
         traffic: [
             'Traffic noise, roadway noise',
+            'Vehicle',
             'Motor vehicle (road)',
             'Engine',
             'Engine starting',
@@ -117,6 +120,20 @@
             'Motorcycle',
             'Idling',
             'Accelerating, revving, vroom',
+            'Car passing by',
+            'Skidding',
+            'Tire squeal',
+            'Air brake',
+            'Reversing beeps',
+            'Emergency vehicle',
+            'Rail transport',
+            'Train',
+            'Subway, metro, underground',
+            'Bicycle',
+            'Skateboard',
+            'Walk, footsteps',
+            'Run',
+            'Shuffle',
         ],
         birds: [
             'Bird',
@@ -160,6 +177,39 @@
         var exps = arr.map(function (x) { return Math.exp(x - max); });
         var sum  = exps.reduce(function (a, b) { return a + b; }, 0) + EPSILON;
         return exps.map(function (e) { return e / sum; });
+    }
+
+    function rebalanceChatterProbability(probs) {
+        var chatter = probs.chatter || 0;
+        var cap = CONFIG.chatterMaxShare;
+        var ambientClasses = ['horn', 'traffic', 'birds', 'sea'];
+        var ambientTotal = 0;
+
+        ambientClasses.forEach(function (cls) {
+            ambientTotal += probs[cls] || 0;
+        });
+
+        if (chatter <= cap || ambientTotal < CONFIG.chatterAmbientFloor) {
+            return probs;
+        }
+
+        var excess = chatter - cap;
+        if (excess <= EPSILON) {
+            return probs;
+        }
+
+        var rebalanced = {};
+        Object.keys(probs).forEach(function (cls) {
+            rebalanced[cls] = probs[cls];
+        });
+        rebalanced.chatter = cap;
+
+        ambientClasses.forEach(function (cls) {
+            var share = (probs[cls] || 0) / ambientTotal;
+            rebalanced[cls] = (probs[cls] || 0) + excess * share;
+        });
+
+        return rebalanced;
     }
 
     /* ─── Pd bridge ─────────────────────────────────────────────────────────── */
@@ -308,6 +358,7 @@
             'caw': 110,
             /* Vehicles / traffic */
             'motor vehicle (road)': 295,
+            'vehicle': 294,
             'car': 300,
             'vehicle horn, car horn, honking': 302,
             'air horn, truck horn': 303,
@@ -325,6 +376,20 @@
             'motorcycle': 311,
             'bus': 312,
             'traffic noise, roadway noise': 340,
+            'car passing by': 308,
+            'skidding': 306,
+            'tire squeal': 307,
+            'air brake': 311,
+            'reversing beeps': 313,
+            'emergency vehicle': 316,
+            'rail transport': 322,
+            'train': 323,
+            'subway, metro, underground': 328,
+            'bicycle': 335,
+            'skateboard': 336,
+            'walk, footsteps': 48,
+            'run': 46,
+            'shuffle': 47,
             /* Water / sea */
             'water': 294,
             'ocean': 488,
@@ -722,6 +787,11 @@
         ALL_CLASSES.forEach(function (cls, i) {
             probs[cls] = smoothed[i];
             if (smoothed[i] > smoothed[bestIdx]) bestIdx = i;
+        });
+        probs = rebalanceChatterProbability(probs);
+        bestIdx = 0;
+        ALL_CLASSES.forEach(function (cls, i) {
+            if (probs[cls] > probs[ALL_CLASSES[bestIdx]]) bestIdx = i;
         });
         var candidateClass = ALL_CLASSES[bestIdx];
 
